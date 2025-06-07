@@ -1,81 +1,65 @@
 name: Restrict PRs to Master
-
+# Doesnt work, permissions?! 
+# I won't use a PAT for that!
 on:
-  pull_request:
-    types: [opened, reopened]
-    branches: [master]
-
-permissions:
-  pull-requests: write
-  contents: read
-
+  workflow_call:
+  #pull_request:
+  #  types: [opened, reopened]
+  #  branches: [master]
+  
 jobs:
   check_pr_creator:
+    permissions:
+      issues: write
+      pull-requests: write
+  
     runs-on: ubuntu-latest
     steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+
       - name: Check PR creator's permissions
-        uses: actions/github-script@v6
-        with:
-          github-token: ${{secrets.GITHUB_TOKEN}}
-          script: |
-            const creator = context.payload.pull_request.user.login;
-            const repo = context.repo.repo;
-            const owner = context.repo.owner;
+        id: check_permissions
+        run: |
+          curl -s -X GET \
+          https://api.github.com/repos/${GITHUB_REPOSITORY}/collaborators/${GITHUB_ACTOR}/permission \
+          -H 'Authorization: Bearer $GITHUB_TOKEN' \
+          -H 'Accept: application/vnd.github.v3+json' \
+          | jq '.permission' > permission.txt 2>/dev/null || echo "read" > permission.txt
+
+          if [ "$(cat permission.txt)" != "admin" ] && [ "$(cat permission.txt)" != "write" ]; then
+            echo "::set-output name=result::false"
+          else
+            echo "::set-output name=result::true"
+          fi
+
+      - name: Comment PR
+        if: steps.check_permissions.outputs.result == 'false'
+        run: |
+          # Add a comment
+          gh api \
+            --method POST \
+            -H "Accept: application/vnd.github+json" \
+            /repos/${{ github.repository }}/issues/${{ github.event.pull_request.number }}/comments \
+            -f body='Please use the develop branch as base! This PR will be closed, as the master is only used for releases.'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
             
-            console.log(`PR created by: ${creator}`);
-            console.log(`Repository: ${owner}/${repo}`);
+      - name: Close PR
+        if: steps.check_permissions.outputs.result == 'false'
+        run: gh pr close "$NUMBER" --repo "$GH_REPO"
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          NUMBER: ${{ github.event.pull_request.number }}
             
-            try {
-              console.log('Checking creator\'s permission level...');
-              const { data: permission } = await github.rest.repos.getCollaboratorPermissionLevel({
-                owner: owner,
-                repo: repo,
-                username: creator
-              });
-              
-              console.log(`Creator's permission level: ${permission.permission}`);
-              
-              const canPush = ['admin', 'write'].includes(permission.permission);
-              console.log(`Can creator push? ${canPush}`);
-              
-              if (!canPush) {
-                console.log('Creator does not have push access. Closing PR...');
-                await github.rest.issues.createComment({
-                  owner: owner,
-                  repo: repo,
-                  issue_number: context.issue.number,
-                  body: 'Please use the develop branch as base! This PR will be closed, as the master is only used for releases.'
-                });
-                
-                await github.rest.pulls.update({
-                  owner: owner,
-                  repo: repo,
-                  pull_number: context.issue.number,
-                  state: 'closed'
-                });
-                console.log('PR closed and comment added.');
-              } else {
-                console.log('Creator has push access. No action taken.');
-              }
-            } catch (error) {
-              console.error('Error occurred:');
-              console.error(error);
-              
-              if (error.status === 404) {
-                console.log('Creator is not a collaborator. Closing PR...');
-                await github.rest.issues.createComment({
-                  owner: owner,
-                  repo: repo,
-                  issue_number: context.issue.number,
-                  body: 'Please use the develop branch as base! This PR will be closed, as the master is only used for releases.'
-                });
-                
-                await github.rest.pulls.update({
-                  owner: owner,
-                  repo: repo,
-                  pull_number: context.issue.number,
-                  state: 'closed'
-                });
-                console.log('PR closed and comment added.');
-              }
-            }
+      - name: Close Comment PR
+        if: steps.check_permissions.outputs.result == 'false'
+        run: gh pr close "$NUMBER" --comment "$COMMENT" --repo "$GH_REPO"
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          NUMBER: ${{ github.event.pull_request.number }}
+          COMMENT: >
+            Please use the develop branch as base! 
+            This PR will be closed, as the master is only used for releases.
